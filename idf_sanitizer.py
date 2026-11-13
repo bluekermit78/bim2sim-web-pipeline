@@ -61,7 +61,7 @@ def sanitize_idf(idf, logger=None, export_dir=None):
     converted_walls = 0
     for s in bldg_surfaces:
         cname = str(getattr(s, "Construction_Name", ""))
-        if cname.upper().startswith("WINDOW"):
+        if cname.upper().startswith(("WINDOW", "DOOR", "OUTERDOOR")):
             coords = list(getattr(s, "coords", []))
             if len(coords) >= 3:
                 orig_name = s.Name
