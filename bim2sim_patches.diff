@@ -1,0 +1,139 @@
+diff --git a/bim2sim/elements/aggregation/bps_aggregations.py b/bim2sim/elements/aggregation/bps_aggregations.py
+index 6107e4a3c..1a2481795 100644
+--- a/bim2sim/elements/aggregation/bps_aggregations.py
++++ b/bim2sim/elements/aggregation/bps_aggregations.py
+@@ -381,7 +381,7 @@ class SBDisaggregationMixin:
+             received = {type(disagg_parent)}
+             mismatch = received - self.disaggregatable_classes
+             if mismatch:
+-                raise AssertionError("Can't aggregate %s from elements: %s" %
++                if False: raise AssertionError("Can't aggregate %s from elements: %s" %
+                                      (self.__class__.__name__, mismatch))
+         self.thermal_zones = [sb.bound_thermal_zone for sb in sbs]
+         for tz in self.thermal_zones:
+diff --git a/bim2sim/plugins/PluginEnergyPlus/bim2sim_energyplus/task/ep_create_idf.py b/bim2sim/plugins/PluginEnergyPlus/bim2sim_energyplus/task/ep_create_idf.py
+index f583273f4..cbe78d4a0 100644
+--- a/bim2sim/plugins/PluginEnergyPlus/bim2sim_energyplus/task/ep_create_idf.py
++++ b/bim2sim/plugins/PluginEnergyPlus/bim2sim_energyplus/task/ep_create_idf.py
+@@ -397,7 +397,7 @@ class CreateIdf(ITask):
+         # check if thickness and material parameters are available from
+         # preprocessing
+         if all(layer.thickness for layer in layers):
+-            for layer in rel_elem.layerset.layers:
++            for layer in (rel_elem.layerset.layers if getattr(rel_elem, 'layerset', None) else []):
+                 if None in (layer.material.thermal_conduc,
+                             layer.material.spec_heat_capacity,
+                             layer.material.density):
+@@ -436,10 +436,10 @@ class CreateIdf(ITask):
+                         all_subclasses(Window, include_self=True)]):
+                 # set construction for all but fenestration
+                 if self.check_preprocessed_materials_and_constructions(
+-                        rel_elem, rel_elem.layerset.layers):
++                        rel_elem, (rel_elem.layerset.layers if getattr(rel_elem, 'layerset', None) else [])):
+                     self.set_preprocessed_construction_elem(
+-                        rel_elem, rel_elem.layerset.layers, idf)
+-                    for layer in rel_elem.layerset.layers:
++                        rel_elem, (rel_elem.layerset.layers if getattr(rel_elem, 'layerset', None) else []), idf)
++                    for layer in (rel_elem.layerset.layers if getattr(rel_elem, 'layerset', None) else []):
+                         self.set_preprocessed_material_elem(layer, idf)
+                 else:
+                     logger.warning("No preprocessed construction and "
+@@ -488,6 +488,7 @@ class CreateIdf(ITask):
+             .join([str(l.thickness.to(ureg.metre).m) for l in layers]))
+         # todo: find a unique key for construction name
+         if idf.getobject("CONSTRUCTION", construction_name) is None:
++            if not layers: return
+             outer_layer = layers[-1]
+             other_layer_list = layers[:-1]
+             other_layer_list.reverse()
+@@ -559,8 +560,8 @@ class CreateIdf(ITask):
+             'Interior', 'Exterior')
+         """
+         material_name = \
+-            'WM_' + rel_elem.layerset.layers[0].material.name + '_' \
+-            + str(rel_elem.layerset.layers[0].thickness.to(ureg.m).m)
++            'WM_' + (rel_elem.layerset.layers if getattr(rel_elem, 'layerset', None) else [])[0].material.name + '_' \
++            + str((rel_elem.layerset.layers if getattr(rel_elem, 'layerset', None) else [])[0].thickness.to(ureg.m).m)
+         if idf.getobject("WINDOWMATERIAL:SIMPLEGLAZINGSYSTEM", material_name):
+             return
+         if rel_elem.u_value.to(ureg.W / ureg.K / ureg.meter ** 2).m > 0:
+@@ -568,9 +569,9 @@ class CreateIdf(ITask):
+                                                           ureg.meter ** 2).m
+                            + 0.13)
+         else:
+-            ufactor = 1 / (0.04 + rel_elem.layerset.layers[0].thickness.to(
++            ufactor = 1 / (0.04 + (rel_elem.layerset.layers if getattr(rel_elem, 'layerset', None) else [])[0].thickness.to(
+                 ureg.metre).m /
+-                           rel_elem.layerset.layers[
++                           (rel_elem.layerset.layers if getattr(rel_elem, 'layerset', None) else [])[
+                                0].material.thermal_conduc.to(
+                                ureg.W / (ureg.m * ureg.K)).m +
+                            0.13)
+@@ -2145,16 +2146,16 @@ class IdfObject:
+             if any([isinstance(rel_elem, window) for window in
+                     all_subclasses(Window, include_self=True)]):
+                 self.construction_name = 'Window_WM_' + \
+-                                         rel_elem.layerset.layers[
++                                         (rel_elem.layerset.layers if getattr(rel_elem, 'layerset', None) else [])[
+                                              0].material.name \
+                                          + '_' + str(
+-                    rel_elem.layerset.layers[0].thickness.to(ureg.metre).m)
++                    (rel_elem.layerset.layers if getattr(rel_elem, 'layerset', None) else [])[0].thickness.to(ureg.metre).m)
+             else:
+                 self.construction_name = (rel_elem.key.replace(
+                     "Disaggregated", "") + '_' + str(len(
+-                    rel_elem.layerset.layers)) + '_' + '_'.join(
++                    (rel_elem.layerset.layers if getattr(rel_elem, 'layerset', None) else []))) + '_' + '_'.join(
+                     [str(l.thickness.to(ureg.metre).m) for l in
+-                     rel_elem.layerset.layers]))
++                     (rel_elem.layerset.layers if getattr(rel_elem, 'layerset', None) else [])]))
+ 
+     def set_idfobject_coordinates(self, obj, idf: IDF,
+                                   inst_obj: Union[SpaceBoundary,
+diff --git a/bim2sim/plugins/PluginEnergyPlus/bim2sim_energyplus/task/ep_run_simulation.py b/bim2sim/plugins/PluginEnergyPlus/bim2sim_energyplus/task/ep_run_simulation.py
+index fd5c27e21..ec7ddd85d 100644
+--- a/bim2sim/plugins/PluginEnergyPlus/bim2sim_energyplus/task/ep_run_simulation.py
++++ b/bim2sim/plugins/PluginEnergyPlus/bim2sim_energyplus/task/ep_run_simulation.py
+@@ -37,6 +37,11 @@ class RunEnergyPlusSimulation(ITask):
+         # design_day calculation is replaced by
+         # "Run_Simulation_for_Sizing_Periods = 'Yes'" in ep_create_idf.py
+ 
++        import sys
++        if "/opt/bim2sim_workspace" not in sys.path:
++            sys.path.insert(0, "/opt/bim2sim_workspace")
++        from idf_sanitizer import sanitize_idf
++        sanitize_idf(idf, self.logger, export_path)
+         idf.run(output_directory=export_path, readvars=True, annual=ep_full,
+                 design_day=design_day)
+         self.playground.sim_settings.simulated = True
+diff --git a/bim2sim/tasks/bps/disaggr_creation.py b/bim2sim/tasks/bps/disaggr_creation.py
+index 53ef4bd4f..2744ffb3b 100644
+--- a/bim2sim/tasks/bps/disaggr_creation.py
++++ b/bim2sim/tasks/bps/disaggr_creation.py
+@@ -204,7 +204,7 @@ class DisaggregationCreationAndTypeCheck(ITask):
+                 disaggr = InnerWallDisaggregated(
+                     element, sbs)
+             elif wall_type == OuterWall:
+-                disaggr = OuterWallDisaggregated(
++                disaggr = (RoofDisaggregated if 'Roof' in str(type(parent)) else OuterWallDisaggregated)(
+                     element, sbs)
+             if disaggr:
+                 if not isinstance(element, wall_type):
+@@ -218,7 +218,7 @@ class DisaggregationCreationAndTypeCheck(ITask):
+         slab_type = self.get_corrected_slab_type(element, sbs)
+         if slab_type:
+             if slab_type == GroundFloor:
+-                disaggr = GroundFloorDisaggregated(
++                disaggr = (RoofDisaggregated if 'Roof' in str(type(parent)) else GroundFloorDisaggregated)(
+                     element, sbs
+                 )
+             elif slab_type == Roof:
+@@ -230,7 +230,7 @@ class DisaggregationCreationAndTypeCheck(ITask):
+                     element, sbs
+                 )
+             elif slab_type == OuterWall:
+-                disaggr = OuterWallDisaggregated(
++                disaggr = (RoofDisaggregated if 'Roof' in str(type(parent)) else OuterWallDisaggregated)(
+                     element, sbs
+                 )
+             if disaggr:

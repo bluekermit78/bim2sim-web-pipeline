@@ -1,0 +1,19 @@
+# Laufzeit-Jobs und große Simulations-Ergebnisse ignorieren
+jobs/
+*.zip
+*.epw
+/tmp_*
+
+# Python Cache & Environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+
+# Das geklonte Upstream-Repo ignorieren (Änderungen liegen sauber in bim2sim_patches.diff!)
+bim2sim_repo/
+
+#Temporäre Patch-Hilfsskripte ignorieren (optional)
+patch_*.py
+fix_*.py
