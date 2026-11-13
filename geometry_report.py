@@ -5,6 +5,7 @@ import numpy as np
 from gbxml_exporter import (
     _parse_idf_objects,
     _extract_ifc_space_names,
+    _extract_ifc_element_types,
     _poly_normal_and_area,
     _poly_dimensions,
     _azimuth_and_tilt,
@@ -33,7 +34,10 @@ def generate_geometry_html(job_id: str, job_dir: Path, filename: str) -> str:
 
     idf_path = idf_files[0]
     idf_data = _parse_idf_objects(idf_path)
-    ifc_names = _extract_ifc_space_names(ifc_path)
+    arch_ifcs = list(project_dir.rglob('*.ifc'))
+    sb_ifc_path = arch_ifcs[0] if arch_ifcs else ifc_path
+    ifc_names = _extract_ifc_space_names(sb_ifc_path)
+    ifc_elem_types = _extract_ifc_element_types(sb_ifc_path)
     ep_summary = parse_energyplus_summary(project_dir)
 
     # 1. Materialien & Konstruktionen (U-Werte) berechnen
@@ -79,7 +83,7 @@ def generate_geometry_html(job_id: str, job_dir: Path, filename: str) -> str:
             openings_by_base.setdefault(base_name, []).append({
                 "name": f_name,
                 "type": "Tür" if "DOOR" in f_type else "Fenster",
-                "cons": fen[2],
+                "cons": (ifc_elem_types.get(f_name.upper(), {}).get("type_label") or fen[2]),
                 "u_val": u_values.get(f_cons, 1.30),
                 "area": area,
                 "w": w,
@@ -116,7 +120,7 @@ def generate_geometry_html(job_id: str, job_dir: Path, filename: str) -> str:
             "name": s_name,
             "type": s_type,
             "bc": s_bc,
-            "cons": s_cons,
+            "cons": (ifc_elem_types.get(s_name.upper(), {}).get("type_label") or s_cons),
             "u_val": u_values.get(s_cons.upper(), 0.28),
             "pts": pts,
             "gross_area": gross_area,
@@ -260,6 +264,7 @@ def generate_geometry_html(job_id: str, job_dir: Path, filename: str) -> str:
         <tr>
             <td><b>{t_disp}</b></td>
             <td><code>{s['name']}</code></td>
+            <td><span style='background:#f1f5f9;padding:2px 6px;border-radius:4px;font-weight:600;color:#0f172a;'>{s['cons']}</span></td>
             <td>{s['zone_label']}</td>
             <td>{s['compass']}</td>
             <td class="num">{s['tilt']:.1f}°</td>
@@ -275,6 +280,7 @@ def generate_geometry_html(job_id: str, job_dir: Path, filename: str) -> str:
         <tr style="background:#f8fafc; color:#475569; font-size:12.5px;">
             <td style="padding-left:24px;">↳ 🪟 {op['type']}</td>
             <td><code>{op['name']}</code></td>
+            <td><span style='background:#e0f2fe;padding:2px 6px;border-radius:4px;color:#0369a1;'>{op['cons']}</span></td>
             <td>{s['zone_label']}</td>
             <td>{s['compass']}</td>
             <td class="num">{s['tilt']:.1f}°</td>
@@ -380,6 +386,7 @@ def generate_geometry_html(job_id: str, job_dir: Path, filename: str) -> str:
                 <tr>
                     <th>Bauteiltyp</th>
                     <th>IDF / CAD-ID</th>
+                    <th>Typ / Konstruktion</th>
                     <th>Zone / Raum</th>
                     <th>Orientierung</th>
                     <th class="num">Neigung</th>

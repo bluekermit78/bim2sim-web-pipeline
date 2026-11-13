@@ -107,7 +107,7 @@ index fd5c27e21..ec7ddd85d 100644
                  design_day=design_day)
          self.playground.sim_settings.simulated = True
 diff --git a/bim2sim/tasks/bps/disaggr_creation.py b/bim2sim/tasks/bps/disaggr_creation.py
-index 53ef4bd4f..2744ffb3b 100644
+index 53ef4bd4f..bcb25cb05 100644
 --- a/bim2sim/tasks/bps/disaggr_creation.py
 +++ b/bim2sim/tasks/bps/disaggr_creation.py
 @@ -204,7 +204,7 @@ class DisaggregationCreationAndTypeCheck(ITask):
@@ -115,7 +115,7 @@ index 53ef4bd4f..2744ffb3b 100644
                      element, sbs)
              elif wall_type == OuterWall:
 -                disaggr = OuterWallDisaggregated(
-+                disaggr = (RoofDisaggregated if 'Roof' in str(type(parent)) else OuterWallDisaggregated)(
++                disaggr = (RoofDisaggregated if any('Roof' in str(type(v)) for v in locals().values()) else OuterWallDisaggregated)(
                      element, sbs)
              if disaggr:
                  if not isinstance(element, wall_type):
@@ -124,7 +124,7 @@ index 53ef4bd4f..2744ffb3b 100644
          if slab_type:
              if slab_type == GroundFloor:
 -                disaggr = GroundFloorDisaggregated(
-+                disaggr = (RoofDisaggregated if 'Roof' in str(type(parent)) else GroundFloorDisaggregated)(
++                disaggr = (RoofDisaggregated if any('Roof' in str(type(v)) for v in locals().values()) else GroundFloorDisaggregated)(
                      element, sbs
                  )
              elif slab_type == Roof:
@@ -133,7 +133,7 @@ index 53ef4bd4f..2744ffb3b 100644
                  )
              elif slab_type == OuterWall:
 -                disaggr = OuterWallDisaggregated(
-+                disaggr = (RoofDisaggregated if 'Roof' in str(type(parent)) else OuterWallDisaggregated)(
++                disaggr = (RoofDisaggregated if any('Roof' in str(type(v)) for v in locals().values()) else OuterWallDisaggregated)(
                      element, sbs
                  )
              if disaggr:

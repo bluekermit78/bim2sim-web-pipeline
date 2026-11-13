@@ -36,7 +36,12 @@ def _face_area_and_normal(face):
 
 
 def _extract_face_outer_points_3d(face, target_normal=None):
-    """Extrahiert die bereinigten, streng gegen den Uhrzeigersinn geordneten Eckpunkte einer ebenen Fläche (keine 8er-Zickzack-Punkte!)."""
+    """
+    Extrahiert die bereinigten, streng gegen den Uhrzeigersinn geordneten Eckpunkte der
+    2D-Konvexhülle einer ebenen Fläche. Entfernt automatisch Tür-Einbuchtungen an der
+    Wand-Unterkante, sodass die Trägerwand für EnergyPlus/OpenStudio/EVEBI ein sauberes
+    4-Eck (bzw. 5-Eck bei Giebelwänden) bleibt!
+    """
     outer_wire = breptools.OuterWire(face)
     exp = TopExp_Explorer(outer_wire, TopAbs_VERTEX)
     raw_pts = []
@@ -44,7 +49,6 @@ def _extract_face_outer_points_3d(face, target_normal=None):
         v = topods.Vertex(exp.Current())
         p = BRep_Tool.Pnt(v)
         pt = (round(p.X(), 4), round(p.Y(), 4), round(p.Z(), 4))
-        # Deduplizieren mit 1 cm Toleranz
         if not any(math.dist(pt, existing) < 0.01 for existing in raw_pts):
             raw_pts.append(pt)
         exp.Next()
@@ -68,21 +72,37 @@ def _extract_face_outer_points_3d(face, target_normal=None):
     uy = nz*rx - nx*rz
     uz = nx*ry - ny*rx
 
-    # Schwerpunkt berechnen und Eckpunkte im 2D-Koordinatensystem der Fläche nach Winkel sortieren
     cx = sum(p[0] for p in raw_pts) / len(raw_pts)
     cy = sum(p[1] for p in raw_pts) / len(raw_pts)
     cz = sum(p[2] for p in raw_pts) / len(raw_pts)
 
-    pts_with_angle = []
+    pts_2d = []
     for p in raw_pts:
         dx, dy, dz = p[0] - cx, p[1] - cy, p[2] - cz
-        u = dx*rx + dy*ry + dz*rz
-        v = dx*ux + dy*uy + dz*uz
-        angle = math.atan2(v, u)
-        pts_with_angle.append((angle, u, v, p))
+        u = round(dx*rx + dy*ry + dz*rz, 5)
+        v = round(dx*ux + dy*uy + dz*uz, 5)
+        pts_2d.append((u, v, p))
 
-    pts_with_angle.sort(key=lambda item: item[0])
-    sorted_pts = [item[3] for item in pts_with_angle]
+    # 2D Convex Hull (Andrew's Monotone Chain) -> eliminiert nach innen ragende Tür-Ausschnitt-Ecken!
+    pts_2d.sort(key=lambda item: (item[0], item[1]))
+
+    def _cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower = []
+    for pt in pts_2d:
+        while len(lower) >= 2 and _cross(lower[-2], lower[-1], pt) <= 1e-4:
+            lower.pop()
+        lower.append(pt)
+
+    upper = []
+    for pt in reversed(pts_2d):
+        while len(upper) >= 2 and _cross(upper[-2], upper[-1], pt) <= 1e-4:
+            upper.pop()
+        upper.append(pt)
+
+    hull = lower[:-1] + upper[:-1]
+    sorted_pts = [item[2] for item in hull] if len(hull) >= 3 else [item[2] for item in pts_2d]
 
     # Kollineare Zwischenpunkte auf geraden Kanten herausfiltern
     cleaned = []
@@ -97,7 +117,7 @@ def _extract_face_outer_points_3d(face, target_normal=None):
         l2 = float(np.linalg.norm(v2))
         if l1 > 0.01 and l2 > 0.01:
             cross_len = float(np.linalg.norm(np.cross(v1 / l1, v2 / l2)))
-            if cross_len > 0.02:  # Nur echte Ecken behalten (Richtungsänderung > ~1.2°)
+            if cross_len > 0.02:
                 cleaned.append(sorted_pts[i])
 
     return cleaned if len(cleaned) >= 3 else sorted_pts
