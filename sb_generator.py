@@ -326,6 +326,11 @@ def ensure_space_boundaries(ifc_path: Path, log_func=print) -> int:
             brepbndlib.Add(prism, p_bbox)
 
             for el, el_shape, el_bbox in elements:
+                el_cls = el.is_a()
+                if abs(norm[2]) > 0.75 and el_cls in ("IfcWall", "IfcWallStandardCase", "IfcWindow", "IfcDoor"):
+                    continue
+                if abs(norm[2]) < 0.45 and el_cls == "IfcSlab":
+                    continue
                 if el.is_a("IfcRoof") and norm[2] < 0.25:
                     continue
                 if el.is_a("IfcSlab") and abs(norm[2]) < 0.5:
@@ -460,6 +465,7 @@ def ensure_space_boundaries(ifc_path: Path, log_func=print) -> int:
                                 round(pt[2] - d_err * norm[2], 4),
                             ))
                         pts_3d = proj_pts
+                    best_norm = norm
                     cbp = _create_ifc_curve_bounded_plane(ifc_file, pts_3d, best_norm)
                     if cbp is None:
                         continue

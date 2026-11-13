@@ -160,6 +160,7 @@ def _extract_ifc_element_types(ifc_path: Path) -> dict:
                         "type_label": lbl,
                         "el_name": getattr(el, "Name", None) or el.GlobalId[:8],
                         "ifc_class": el.is_a(),
+                        "el_guid": el.GlobalId.upper(),
                     }
             for sb in f.by_type("IfcRelSpaceBoundary"):
                 rel_el = getattr(sb, "RelatedBuildingElement", None)
@@ -169,11 +170,36 @@ def _extract_ifc_element_types(ifc_path: Path) -> dict:
                         "type_label": lbl or rel_el.is_a().replace("Ifc", ""),
                         "el_name": getattr(rel_el, "Name", None) or rel_el.GlobalId[:8],
                         "ifc_class": rel_el.is_a(),
+                        "el_guid": rel_el.GlobalId.upper(),
                     }
         except Exception:
             pass
     return elem_map
 
+
+def _extract_ifc_space_bboxes(ifc_path: Path) -> dict:
+    """Liest aus der IFC-Datei für jeden IfcSpace die echte 3D-Bounding-Box in Weltkoordinaten."""
+    bboxes = {}
+    if not ifcopenshell or not ifc_path or not Path(ifc_path).exists():
+        return bboxes
+    try:
+        import ifcopenshell.geom as ifc_geom
+        f = ifcopenshell.open(str(ifc_path))
+        settings = ifc_geom.settings()
+        settings.set(settings.USE_WORLD_COORDS, True)
+        for sp in f.by_type("IfcSpace"):
+            shape = ifc_geom.create_shape(settings, sp)
+            verts = np.array(shape.geometry.verts, dtype=float).reshape(-1, 3)
+            vmin = verts.min(axis=0)
+            vmax = verts.max(axis=0)
+            bboxes[sp.GlobalId.upper()] = {
+                "xmin": round(float(vmin[0]), 3), "xmax": round(float(vmax[0]), 3),
+                "ymin": round(float(vmin[1]), 3), "ymax": round(float(vmax[1]), 3),
+                "zmin": round(float(vmin[2]), 3), "zmax": round(float(vmax[2]), 3),
+            }
+    except Exception:
+        pass
+    return bboxes
 
 def _extract_ifc_space_names(ifc_path: Path) -> dict:
     names = {}
@@ -197,9 +223,12 @@ def generate_gbxml_from_job(project_dir: Path, output_gbxml_path: Path, ifc_path
     idf_path = idf_files[0]
     idf_data = _parse_idf_objects(idf_path)
 
-    if ifc_path is None or not Path(ifc_path).exists():
-        cand_ifcs = list(project_dir.rglob("*.ifc")) + list(project_dir.parent.glob("input/*.ifc"))
-        ifc_path = cand_ifcs[0] if cand_ifcs else None
+    arch_ifcs = list(project_dir.rglob("*.ifc"))
+    if arch_ifcs:
+        ifc_path = arch_ifcs[0]
+    elif ifc_path is None or not Path(ifc_path).exists():
+        in_ifcs = list(project_dir.parent.glob("input/*.ifc"))
+        ifc_path = in_ifcs[0] if in_ifcs else None
 
     ifc_space_names = _extract_ifc_space_names(ifc_path)
     ifc_elem_types = _extract_ifc_element_types(ifc_path)
@@ -396,61 +425,123 @@ def generate_gbxml_from_job(project_dir: Path, output_gbxml_path: Path, ifc_path
         surfaces.append(s_dict)
         surfaces_by_zone.setdefault(s_zone, []).append(s_dict)
 
-    # 6. Zonen-Geometrie, Floor/Roof-Klassifikation und exaktes Volumen (aus EnergyPlus / Giebelformel)
+    ifc_space_bboxes = _extract_ifc_space_bboxes(ifc_path)
+
+    # 5b. Phantom-Flächen ausfiltern (horizontale Stirnkanten von IfcWall oder vertikale Kanten von IfcSlab)
+    filtered_surfaces = []
+    surfaces_by_zone = {}
+    for s in surfaces:
+        ifc_info = ifc_elem_types.get(s["key"], {})
+        ifc_cls = ifc_info.get("ifc_class", "")
+        is_horiz = (s["tilt"] < 35.0 or s["tilt"] > 145.0)
+        if is_horiz and ifc_cls in ("IfcWall", "IfcWallStandardCase"):
+            continue
+        if not is_horiz and ifc_cls == "IfcSlab":
+            continue
+        s["el_guid"] = ifc_info.get("el_guid", "")
+        s["ifc_class"] = ifc_cls
+        filtered_surfaces.append(s)
+        surfaces_by_zone.setdefault(s["zone_key"], []).append(s)
+    surfaces = filtered_surfaces
+
+    # 5c. Exakte 3D-Ausrichtung (dx, dy, dz) jeder Zone anhand der wahren IfcSpace-Welt-Bounding-Box!
+    for zk, z_surfs in surfaces_by_zone.items():
+        if not z_surfs:
+            continue
+        sp_bb = ifc_space_bboxes.get(zk)
+        if not sp_bb:
+            continue
+        true_xmin, true_xmax = sp_bb["xmin"], sp_bb["xmax"]
+        true_ymin, true_ymax = sp_bb["ymin"], sp_bb["ymax"]
+        true_zmin, true_zmax = sp_bb["zmin"], sp_bb["zmax"]
+
+        all_pts = [p for s in z_surfs for p in s["pts"]]
+        idf_xmin = min(p[0] for p in all_pts)
+        idf_ymin = min(p[1] for p in all_pts)
+        idf_zmin = min(p[2] for p in all_pts)
+
+        dx = round(idf_xmin - true_xmin, 3)
+        dy = round(idf_ymin - true_ymin, 3)
+        dz = round(idf_zmin - true_zmin, 3)
+
+        if abs(dx) > 0.05 or abs(dy) > 0.05 or abs(dz) > 0.05:
+            for s in z_surfs:
+                s["pts"] = [[round(p[0] - dx, 4), round(p[1] - dy, 4), round(p[2] - dz, 4)] for p in s["pts"]]
+                s["avg_z"] = sum(p[2] for p in s["pts"]) / len(s["pts"])
+                for op in s["openings"]:
+                    op_xmin = min(p[0] for p in op["pts"])
+                    op_ymin = min(p[1] for p in op["pts"])
+                    op_zmax = max(p[2] for p in op["pts"])
+                    ox = dx if (op_xmin < true_xmin - 0.1 or op_xmin > true_xmax + 0.1) else 0.0
+                    oy = dy if (op_ymin < true_ymin - 0.1 or op_ymin > true_ymax + 0.1) else 0.0
+                    oz = dz if (op_zmax > true_zmax + 0.1 or op_zmax < true_zmin - 0.1) else 0.0
+                    op["pts"] = [[round(p[0] - ox, 4), round(p[1] - oy, 4), round(p[2] - oz, 4)] for p in op["pts"]]
+
+        # Falls das obere Dach (IfcSlab) in einem Alt-Job zu einem 3-Punkt-Dreieck verschnitten wurde,
+        # stelle aus der horizontalen Bodenfläche der Zone das exakte 4-Punkt-Dachrechteck bei true_zmax her:
+        wall_zmaxs = [max(p[2] for p in s["pts"]) for s in z_surfs if s["ifc_class"] in ("IfcWall", "IfcWallStandardCase")]
+        if wall_zmaxs and all(abs(wz - true_zmax) < 0.05 for wz in wall_zmaxs):
+            floor_candidates = [s for s in z_surfs if s["ifc_class"] == "IfcSlab" and s["avg_z"] < 0.5 * (true_zmin + true_zmax)]
+            for s in z_surfs:
+                if s["ifc_class"] == "IfcSlab" and s["avg_z"] > 0.5 * (true_zmin + true_zmax):
+                    if floor_candidates:
+                        # Kopiere X/Y-Umriss vom Boden der Zone (umgekehrter Umlaufsinn -> Normale zeigt nach oben +Z)
+                        fl_pts = floor_candidates[0]["pts"]
+                        s["pts"] = [[p[0], p[1], true_zmax] for p in reversed(fl_pts)]
+                    else:
+                        s["pts"] = [[p[0], p[1], true_zmax] for p in s["pts"]]
+                    s["norm"], s["area"] = _poly_normal_and_area(s["pts"])
+                    if s["norm"][2] < 0:
+                        s["pts"] = list(reversed(s["pts"]))
+                        s["norm"], s["area"] = _poly_normal_and_area(s["pts"])
+                    s["width"], s["height"] = _poly_dimensions(s["pts"], s["area"])
+                    s["azimuth"], s["tilt"] = _azimuth_and_tilt(s["norm"])
+                    s["avg_z"] = true_zmax
+
+    # 6. Zonen-Höhenlagen (EG / OG), Innenwände (InteriorWall) und Geschossdecken (InteriorFloor/Ceiling) bestimmen
     try:
         from update_preview import parse_energyplus_summary
         ep_summary = parse_energyplus_summary(project_dir)
     except Exception:
         ep_summary = {}
 
+    zone_z_bounds = {}
+    for zk, zd in zones.items():
+        z_surfs = surfaces_by_zone.get(zk, [])
+        if not z_surfs:
+            zone_z_bounds[zk] = (0.0, 3.0, 1.5)
+            continue
+        all_z = [p[2] for s in z_surfs for p in s["pts"]]
+        zmin, zmax = min(all_z), max(all_z)
+        zone_z_bounds[zk] = (zmin, zmax, 0.5 * (zmin + zmax))
+
+    all_bldg_z = [b[0] for b in zone_z_bounds.values()] + [b[1] for b in zone_z_bounds.values()]
+    bldg_min_z = min(all_bldg_z) if all_bldg_z else 0.0
+    bldg_max_z = max(all_bldg_z) if all_bldg_z else 10.0
+
     for zk, zd in zones.items():
         z_surfs = surfaces_by_zone.get(zk, [])
         if not z_surfs:
             continue
-        all_z = [p[2] for s in z_surfs for p in s["pts"]]
-        z_min_z, z_max_z = min(all_z), max(all_z)
-        z_mid = 0.5 * (z_min_z + z_max_z)
-
-        has_floor = False
-        has_roof = False
-        roof_s = None
+        z_min_z, z_max_z, z_mid = zone_z_bounds[zk]
         for s in z_surfs:
             if s["tilt"] < 65.0 or s["tilt"] > 115.0:
+                cx = sum(pt[0] for pt in s["pts"]) / len(s["pts"])
+                cy = sum(pt[1] for pt in s["pts"]) / len(s["pts"])
+                pts_ccw = sorted(s["pts"], key=lambda pt: math.atan2(pt[1] - cy, pt[0] - cx))
+                is_roof = (s["avg_z"] >= z_mid and abs(s["avg_z"] - bldg_max_z) < 0.35)
+                s["pts"] = pts_ccw if is_roof else list(reversed(pts_ccw))
+                s["norm"], s["area"] = _poly_normal_and_area(s["pts"])
+                s["width"], s["height"] = _poly_dimensions(s["pts"], s["area"])
+                s["azimuth"], s["tilt"] = _azimuth_and_tilt(s["norm"])
                 if s["avg_z"] < z_mid:
                     s["idf_type"] = "FLOOR"
-                    s["bc"] = "GROUND"
+                    s["bc"] = "GROUND" if abs(s["avg_z"] - bldg_min_z) < 0.35 else "SURFACE"
                     s["tilt"] = 180.0
-                    has_floor = True
                 else:
                     s["idf_type"] = "ROOF"
                     s["bc"] = "OUTDOORS"
-                    has_roof = True
-                    roof_s = s
-
-        if not has_floor and has_roof and roof_s is not None:
-            fl_pts = [[p[0], p[1], z_min_z] for p in reversed(roof_s["pts"])]
-            fl_norm, fl_area = _poly_normal_and_area(fl_pts)
-            fl_w, fl_h = _poly_dimensions(fl_pts, fl_area)
-            fl_dict = {
-                "id": _clean_id(f"AutoFloor_{zk[:8]}", "Surf"),
-                "key": f"AUTOFLOOR_{zk}",
-                "name": f"Floor_{zk[:8]}",
-                "idf_type": "FLOOR",
-                "cons_key": roof_s["cons_key"],
-                "zone_key": zk,
-                "bc": "GROUND",
-                "pts": fl_pts,
-                "norm": fl_norm,
-                "area": round(fl_area, 3),
-                "width": fl_w,
-                "height": fl_h,
-                "azimuth": 0.0,
-                "tilt": 180.0,
-                "avg_z": z_min_z,
-                "openings": [],
-            }
-            surfaces.append(fl_dict)
-            z_surfs.append(fl_dict)
+                    s["tilt"] = 0.0 if s["tilt"] < 35.0 else s["tilt"]
 
         floors = [s for s in z_surfs if s["idf_type"] == "FLOOR"]
         if floors:
@@ -463,14 +554,49 @@ def generate_gbxml_from_job(project_dir: Path, output_gbxml_path: Path, ifc_path
         if ep_z.get("volume_m3", 0.0) > 0.1:
             zd["volume"] = round(float(ep_z["volume_m3"]), 2)
         if zd["volume"] <= 0.01:
-            eave_zs = [min(p[2] for p in s["pts"]) for s in z_surfs if s["idf_type"] == "ROOF" and (max(p[2] for p in s["pts"]) - min(p[2] for p in s["pts"])) > 0.25]
-            if eave_zs:
-                z_eave = sum(eave_zs) / len(eave_zs)
-                zd["volume"] = round(zd["area"] * ((z_eave - z_min_z) + 0.5 * (z_max_z - z_eave)), 2)
-            else:
-                zd["volume"] = round(zd["area"] * max(1.0, (z_max_z - z_min_z)), 2)
+            zd["volume"] = round(zd["area"] * max(1.0, (z_max_z - z_min_z)), 2)
 
-    # 7. XML-Baum nach gbXML v7.03 Schema aufbauen
+    # Nachbarschafts-Analyse über Bauteil-GUID (IfcWall / IfcSlab):
+    # Ein Bauteil ist genau dann ein INNEN-Bauteil (Innenwand / Geschossdecke), wenn es SpaceBoundaries
+    # in >=2 Zonen mit ENTGEGENGESETZTEN Normalenvektoren (dot < -0.5) besitzt!
+    by_el_guid = {}
+    for s in surfaces:
+        if s.get("el_guid"):
+            by_el_guid.setdefault(s["el_guid"], []).append(s)
+
+    skip_surface_ids = set()
+    for el_guid, s_group in by_el_guid.items():
+        group_zones = sorted({s["zone_key"] for s in s_group})
+        if len(group_zones) < 2:
+            continue
+        has_opp = any(
+            s_group[i]["zone_key"] != s_group[j]["zone_key"] and
+            sum(s_group[i]["norm"][k]*s_group[j]["norm"][k] for k in range(3)) < -0.5
+            for i in range(len(s_group)) for j in range(i+1, len(s_group))
+        )
+        if not has_opp:
+            continue
+        ifc_cls = s_group[0].get("ifc_class", "")
+        for s in s_group:
+            other_zks = [z for z in group_zones if z != s["zone_key"]]
+            s["is_internal"] = True
+            s["adj_zone_key"] = other_zks[0]
+            s["bc"] = other_zks[0]
+            if ifc_cls in ("IfcWall", "IfcWallStandardCase"):
+                s["gb_surface_type"] = "InteriorWall"
+            elif ifc_cls == "IfcSlab":
+                s["gb_surface_type"] = "InteriorFloor"
+                if s["norm"][2] > 0:
+                    s["pts"] = list(reversed(s["pts"]))
+                    s["norm"], s["area"] = _poly_normal_and_area(s["pts"])
+                s["tilt"] = 180.0
+    for s in surfaces:
+        if s["tilt"] < 65.0 or s["tilt"] > 115.0:
+            xs, ys, z0 = [pt[0] for pt in s["pts"]], [pt[1] for pt in s["pts"]], round(s["avg_z"], 4)
+            x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+            ccw = [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0]]
+            s["pts"] = list(reversed(ccw)) if s["idf_type"] == "FLOOR" else ccw
+    # 7. XML-Baum nach gbXML v7.03 Schema aufbauen (mit automatischen Geschossen EG / OG)
     root = ET.Element("gbXML", {
         "xmlns": "http://www.gbxml.org/schema",
         "version": "7.03",
@@ -492,14 +618,30 @@ def generate_gbxml_from_job(project_dir: Path, output_gbxml_path: Path, ifc_path
     bldg = ET.SubElement(campus, "Building", {"id": "Bldg_1", "buildingType": "Office"})
     ET.SubElement(bldg, "Name").text = idf_path.stem
     ET.SubElement(bldg, "Area").text = f"{max(10.0, total_bldg_area):.2f}"
-    storey = ET.SubElement(bldg, "BuildingStorey", {"id": "Storey_1"})
-    ET.SubElement(storey, "Name").text = "Erdgeschoss"
-    ET.SubElement(storey, "Level").text = "0.00"
+
+    storey_levels = []
+    zone_storey_id = {}
+    for zk in sorted(zones.keys(), key=lambda k: zone_z_bounds[k][0]):
+        zmin = round(zone_z_bounds[zk][0], 2)
+        matched_st = None
+        for st_id, st_z in storey_levels:
+            if abs(zmin - st_z) < 0.5:
+                matched_st = st_id
+                break
+        if not matched_st:
+            st_idx = len(storey_levels) + 1
+            matched_st = f"Storey_{st_idx}"
+            st_name = "Erdgeschoss" if st_idx == 1 else f"{st_idx - 1}. Obergeschoss"
+            storey_levels.append((matched_st, zmin))
+            st_el = ET.SubElement(bldg, "BuildingStorey", {"id": matched_st})
+            ET.SubElement(st_el, "Name").text = st_name
+            ET.SubElement(st_el, "Level").text = f"{zmin:.2f}"
+        zone_storey_id[zk] = matched_st
 
     for zk, zd in zones.items():
         sp_el = ET.SubElement(bldg, "Space", {
             "id": zd["id"],
-            "buildingStoreyIdRef": "Storey_1",
+            "buildingStoreyIdRef": zone_storey_id.get(zk, "Storey_1"),
             "zoneIdRef": f"Zone_{zd['id']}",
         })
         ET.SubElement(sp_el, "Name").text = zd["name"]
@@ -519,11 +661,23 @@ def generate_gbxml_from_job(project_dir: Path, output_gbxml_path: Path, ifc_path
 
         ET.SubElement(sp_el, "CADObjectId").text = zd["cad_id"]
 
-    # 8. Surfaces + untergeordnete Openings (XSD-konform NACH PlanarGeometry!)
+    # 8. Surfaces + untergeordnete Openings schreiben
     for s in surfaces:
-        gb_type = _map_surface_type(s["idf_type"], s["bc"], s["tilt"])
-        exposed = "true" if s["bc"] == "OUTDOORS" else "false"
+        pass
+        if s.get("is_internal"):
+            gb_type = s["gb_surface_type"]
+            exposed = "false"
+        else:
+            gb_type = _map_surface_type(s["idf_type"], s["bc"], s["tilt"])
+            exposed = "true" if s["bc"] == "OUTDOORS" else "false"
         ifc_info = ifc_elem_types.get(s["key"])
+        t_lbl = (ifc_info.get("type_label", "") if ifc_info else "").lower()
+        if "innenwand" in t_lbl or s.get("is_internal") and s["ifc_class"] in ("IfcWall", "IfcWallStandardCase"):
+            gb_type, exposed = "InteriorWall", "false"
+            s["adj_zone_key"] = [k for k in zones if k != s["zone_key"] and abs(zone_z_bounds[k][0] - zone_z_bounds[s["zone_key"]][0]) < 0.5][0]
+        elif "geschossdecke" in t_lbl or s.get("is_internal") and s["ifc_class"] == "IfcSlab":
+            gb_type, exposed = ("InteriorFloor" if s["idf_type"] == "FLOOR" else "Ceiling"), "false"
+            s["adj_zone_key"] = [k for k in zones if abs(zone_z_bounds[k][0] - zone_z_bounds[s["zone_key"]][0]) >= 0.5][0]
         base_c = constructions.get(s["cons_key"], next(iter(constructions.values())))
 
         if ifc_info and ifc_info.get("type_label"):
@@ -542,6 +696,14 @@ def generate_gbxml_from_job(project_dir: Path, output_gbxml_path: Path, ifc_path
             cons_id = base_c["id"]
             s_display_name = s["name"]
 
+        if gb_type in ("SlabOnGrade", "InteriorFloor", "Roof", "Ceiling"):
+            xs, ys, z0 = [pt[0] for pt in s["pts"]], [pt[1] for pt in s["pts"]], round(s["avg_z"], 4)
+            x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+            pts_ccw = [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0]]
+            s["pts"] = pts_ccw if gb_type == "Roof" else list(reversed(pts_ccw))
+            s["tilt"] = 0.0 if gb_type in ("Roof", "Ceiling") else 180.0
+            s["area"] = round((x1 - x0) * (y1 - y0), 4)
+            s["width"], s["height"] = round(max(x1 - x0, y1 - y0), 3), round(min(x1 - x0, y1 - y0), 3)
         surf_el = ET.SubElement(campus, "Surface", {
             "id": s["id"],
             "surfaceType": gb_type,
@@ -553,9 +715,8 @@ def generate_gbxml_from_job(project_dir: Path, output_gbxml_path: Path, ifc_path
         z_id = zones.get(s["zone_key"], {}).get("id")
         if z_id:
             ET.SubElement(surf_el, "AdjacentSpaceId", {"spaceIdRef": z_id})
-            if s["bc"] not in ("OUTDOORS", "GROUND"):
-                other_z = zones.get(s["bc"], {}).get("id", z_id)
-                ET.SubElement(surf_el, "AdjacentSpaceId", {"spaceIdRef": other_z})
+            if gb_type in ("InteriorWall", "InteriorFloor") and s.get("adj_zone_key") and s["adj_zone_key"] in zones:
+                ET.SubElement(surf_el, "AdjacentSpaceId", {"spaceIdRef": zones[s["adj_zone_key"]]["id"]})
 
         rg = ET.SubElement(surf_el, "RectangularGeometry")
         ET.SubElement(rg, "Azimuth").text = f"{s['azimuth']:.2f}"

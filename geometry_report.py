@@ -5,7 +5,7 @@ import numpy as np
 from gbxml_exporter import (
     _parse_idf_objects,
     _extract_ifc_space_names,
-    _extract_ifc_element_types,
+    _extract_ifc_element_types, _extract_ifc_space_bboxes,
     _poly_normal_and_area,
     _poly_dimensions,
     _azimuth_and_tilt,
@@ -25,7 +25,7 @@ def _compass_dir(azimuth: float, tilt: float) -> str:
 
 def generate_geometry_html(job_id: str, job_dir: Path, filename: str) -> str:
     project_dir = job_dir / "bim2sim_project"
-    in_ifcs = list((job_dir / "input").glob("*.ifc"))
+    in_ifcs = list((job_dir / "bim2sim_project").rglob("*.ifc")) + list((job_dir / "input").glob("*.ifc"))
     ifc_path = in_ifcs[0] if in_ifcs else None
 
     idf_files = [f for f in project_dir.rglob("*.idf") if "Minimal.idf" not in str(f)] if project_dir.exists() else []
@@ -38,6 +38,7 @@ def generate_geometry_html(job_id: str, job_dir: Path, filename: str) -> str:
     sb_ifc_path = arch_ifcs[0] if arch_ifcs else ifc_path
     ifc_names = _extract_ifc_space_names(sb_ifc_path)
     ifc_elem_types = _extract_ifc_element_types(sb_ifc_path)
+    ifc_bboxes = _extract_ifc_space_bboxes(sb_ifc_path)
     ep_summary = parse_energyplus_summary(project_dir)
 
     # 1. Materialien & Konstruktionen (U-Werte) berechnen
@@ -118,7 +119,7 @@ def generate_geometry_html(job_id: str, job_dir: Path, filename: str) -> str:
 
         surfaces_by_zone.setdefault(s_zone, []).append({
             "name": s_name,
-            "type": s_type,
+            "type": s_type, "el_guid": ifc_elem_types.get(s_name.upper(), {}).get("el_guid", ""), "ifc_class": ifc_elem_types.get(s_name.upper(), {}).get("ifc_class", ""), "norm": norm,
             "bc": s_bc,
             "cons": (ifc_elem_types.get(s_name.upper(), {}).get("type_label") or s_cons),
             "u_val": u_values.get(s_cons.upper(), 0.28),
