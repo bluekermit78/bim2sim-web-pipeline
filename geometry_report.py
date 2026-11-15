@@ -406,3 +406,9 @@ def generate_geometry_html(job_id: str, job_dir: Path, filename: str) -> str:
     </div>
 </body>
 </html>"""
+
+_orig_gen_report = generate_geometry_html
+def generate_geometry_html(job_id, job_dir, *args, **kwargs):
+    ht = _orig_gen_report(job_id, job_dir, *args, **kwargs)
+    from material_calibrator import fix_geometry_report_html
+    return fix_geometry_report_html(job_dir, ht)

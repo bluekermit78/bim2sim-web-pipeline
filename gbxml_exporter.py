@@ -849,3 +849,10 @@ def generate_gbxml_from_job(project_dir: Path, output_gbxml_path: Path, ifc_path
     pretty_xml = minidom.parseString(raw_xml).toprettyxml(indent="  ", encoding="utf-8")
     output_gbxml_path.write_bytes(pretty_xml)
     return output_gbxml_path
+
+_orig_gen_gbxml = generate_gbxml_from_job
+def generate_gbxml_from_job(project_dir, output_xml_path=None, *args, **kwargs):
+    res = _orig_gen_gbxml(project_dir, output_xml_path, *args, **kwargs)
+    from material_calibrator import apply_catalog_to_gbxml_file
+    apply_catalog_to_gbxml_file(res, project_dir)
+    return res

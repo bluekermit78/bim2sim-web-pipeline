@@ -330,7 +330,7 @@ def index():
             <h1>bim2sim: Bonsai IFC4 &rarr; EnergyPlus (.idf)</h1>
             <form id="uploadForm">
                 <label>1. IFC4-Datei aus Bonsai (.ifc):</label>
-                <input type="file" name="ifc_file" accept=".ifc" required>
+                <input type="file" name="ifc_file" accept=".ifc" onchange="scanIfcFile(this)" required>
 
                 <label>2. Optional: Eigene Wetterdatei (.epw):</label>
                 <input type="file" name="epw_file" accept=".epw">
@@ -343,7 +343,10 @@ def index():
                     <label><input type="checkbox" name="run_sim"> Komplette 8760h-Jahressimulation rechnen (ohne Haken: schneller Sizing-Lauf für Spitzenheizlast)</label>
                 </div>
                 <button type="submit">Konvertierung starten</button>
-            </form>
+            <div id="matConfigBox" style="display:none;margin-top:14px;padding:12px;background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;">
+<h4 style="margin:0 0 8px 0;">🧱 Erkannte Bauteiltypen (Katalog-Voreinstellung für EVEBI & OpenStudio)</h4>
+<table style="width:100%;font-size:13px;border-collapse:collapse;"><thead style="background:#e2e8f0;"><tr><th style="padding:6px;text-align:left;">Bonsai-Typ</th><th>IFC-Klasse</th><th>Bauweise / Vorlage</th><th>U-Wert [W/m²K]</th><th>g-Wert</th></tr></thead><tbody id="matConfigRows"></tbody></table>
+<button type="button" onclick="saveMatCatalog()" style="margin-top:8px;background:#0f766e;color:white;border:none;padding:6px 12px;border-radius:5px;cursor:pointer;">💾 Im Bauteil-Katalog speichern & auf Jobs anwenden</button><span id="matSaveMsg" style="margin-left:10px;color:#15803d;font-weight:600;"></span></div></form>
         </div>
 
         <div class="card">
@@ -437,7 +440,28 @@ def index():
             }
             setInterval(loadJobs, 3000);
             loadJobs();
-        </script>
+        
+async function scanIfcFile(inp){
+  if(!inp.files.length)return;
+  const fd=new FormData(); fd.append("file",inp.files[0]);
+  const r=await fetch("/api/inspect-ifc",{method:"POST",body:fd});
+  const d=await r.json(); const tb=document.getElementById("matConfigRows"); tb.innerHTML="";
+  d.types.forEach(x=>{
+    const opts=Object.entries(d.templates).map(([k,v])=>`<option value="${k}" ${x.template===k?'selected':''}>${v}</option>`).join("");
+    tb.innerHTML+=`<tr data-type="${x.type_name}" style="border-bottom:1px solid #e2e8f0;"><td style="padding:6px;font-weight:600;">${x.type_name} (${x.count}x)</td><td><code>${x.ifc_class}</code></td><td><select class="m-tpl">${opts}</select></td><td><input type="number" step="0.01" class="m-u" value="${x.u_value}" style="width:70px;"></td><td>${x.ifc_class==='IfcWindow'?`<input type="number" step="0.01" class="m-g" value="${x.shgc||0.6}" style="width:60px;">`:'–'}</td></tr>`;
+  });
+  document.getElementById("matConfigBox").style.display="block";
+}
+async function saveMatCatalog(){
+  const cat={};
+  document.querySelectorAll("#matConfigRows tr").forEach(tr=>{
+    const g=tr.querySelector(".m-g");
+    cat[tr.dataset.type]={template:tr.querySelector(".m-tpl").value,u_value:parseFloat(tr.querySelector(".m-u").value),shgc:g?parseFloat(g.value):null};
+  });
+  await fetch("/api/catalog",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({catalog:cat})});
+  document.getElementById("matSaveMsg").innerText="✓ Gespeichert & gbXML/Report aktualisiert!";
+}
+</script>
     </body>
     </html>
     """
@@ -572,3 +596,23 @@ def download_result(job_id: str, file_type: str):
         return FileResponse(dec_path, media_type="text/plain")
 
     raise HTTPException(status_code=400, detail="Ungültiger Dateityp")
+
+from fastapi import Body
+from material_calibrator import inspect_ifc_types, save_catalog, TEMPLATES, apply_catalog_to_idf
+
+@app.post("/api/inspect-ifc")
+async def api_inspect_ifc(file: UploadFile = File(...)):
+    tmp = Path("/tmp") / f"scan_{file.filename}"
+    tmp.write_bytes(await file.read())
+    try:
+        return {"types": inspect_ifc_types(tmp), "templates": {k: v[0] for k, v in TEMPLATES.items()}}
+    finally:
+        tmp.unlink(missing_ok=True)
+
+@app.post("/api/catalog")
+async def api_save_catalog(payload: dict = Body(...)):
+    save_catalog(payload.get("catalog", {}))
+    for j_dir in Path("/opt/bim2sim_workspace/jobs").iterdir():
+        if (j_dir / "bim2sim_project").exists():
+            apply_catalog_to_idf(j_dir / "bim2sim_project")
+    return {"status": "ok"}
