@@ -710,6 +710,10 @@ def generate_gbxml_from_job(project_dir: Path, output_gbxml_path: Path, ifc_path
             "constructionIdRef": cons_id,
             "exposedToSun": exposed,
         })
+        if gb_type == "InteriorWall":
+            surf_el.set("constructionIdRef", "Cons_Innenwand")
+        elif gb_type in ("InteriorFloor", "Ceiling") and "geschossdecke" in s_display_name.lower():
+            surf_el.set("constructionIdRef", "Cons_Geschossdecke")
         ET.SubElement(surf_el, "Name").text = s_display_name
 
         z_id = zones.get(s["zone_key"], {}).get("id")
