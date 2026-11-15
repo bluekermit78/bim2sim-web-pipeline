@@ -105,13 +105,22 @@ def apply_catalog_to_gbxml_file(xml_path: Path, project_dir: Path):
             ET.SubElement(me, f"{ns}Density", {"unit": "KgPerCubicMeter"}).text = f"{mr:.1f}"
             ET.SubElement(me, f"{ns}SpecificHeat", {"unit": "JPerKgK"}).text = f"{mc:.1f}"; m_l.append(me)
         l_l.append(le)
+    wt_l = [wt for wt in wt_l if wt.findtext(f'{ns}Name','') in types]
     for wt in wt_l:
         wnm = wt.findtext(f"{ns}Name", "")
         if wnm in types:
             wt.find(f"{ns}U-value").text = f"{ float(types[wnm]['u_value']):.2f}"
             wt.find(f"{ns}SolarHeatGainCoeff").text = f"{ float(types[wnm].get('shgc') or 0.6):.2f}"
     for el in c_l + l_l + m_l + wt_l + ([dh] if dh is not None else []): root.append(el)
+    sp_ids = [sp.attrib["id"] for sp in root.findall(f".//{ns}Space")]
     for sf in root.findall(f".//{ns}Surface"):
+        if sf.attrib.get("surfaceType") in ("InteriorFloor", "InteriorWall"):
+            sf.set("exposedToSun", "false")
+            adj = sf.findall(f"{ns}AdjacentSpaceId")
+            if len(adj) == 1 and len(sp_ids) > 1:
+                other = next((s for s in sp_ids if s != adj[0].attrib.get("spaceIdRef")), sp_ids[0])
+                ET.SubElement(sf, f"{ns}AdjacentSpaceId", {"spaceIdRef": other})
+
         nm = sf.findtext(f"{ns}Name", "")
         for t_nm in sorted(types, key=len, reverse=True):
             if nm.startswith(t_nm + "_") or nm == t_nm:

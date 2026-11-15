@@ -1,0 +1,42 @@
+{
+  "Bodenplatte": {
+    "template": "bodenplatte",
+    "u_value": 0.56,
+    "shgc": null
+  },
+  "Flachdach": {
+    "template": "leichtbau",
+    "u_value": 0.45,
+    "shgc": null
+  },
+  "Geschossdecke": {
+    "template": "geschossdecke",
+    "u_value": 1.18,
+    "shgc": null
+  },
+  "Innenwand": {
+    "template": "innenwand",
+    "u_value": 2.32,
+    "shgc": null
+  },
+  "Wall_EG": {
+    "template": "massiv",
+    "u_value": 1.4,
+    "shgc": null
+  },
+  "Wall_OG": {
+    "template": "massiv",
+    "u_value": 1.4,
+    "shgc": null
+  },
+  "Fenster_EG": {
+    "template": "fenster",
+    "u_value": 1.28,
+    "shgc": 0.6
+  },
+  "Fenster_OG1": {
+    "template": "fenster",
+    "u_value": 1.28,
+    "shgc": 0.6
+  }
+}
