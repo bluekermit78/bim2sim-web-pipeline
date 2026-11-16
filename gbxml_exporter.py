@@ -469,13 +469,7 @@ def generate_gbxml_from_job(project_dir: Path, output_gbxml_path: Path, ifc_path
                 s["pts"] = [[round(p[0] - dx, 4), round(p[1] - dy, 4), round(p[2] - dz, 4)] for p in s["pts"]]
                 s["avg_z"] = sum(p[2] for p in s["pts"]) / len(s["pts"])
                 for op in s["openings"]:
-                    op_xmin = min(p[0] for p in op["pts"])
-                    op_ymin = min(p[1] for p in op["pts"])
-                    op_zmax = max(p[2] for p in op["pts"])
-                    ox = dx if (op_xmin < true_xmin - 0.1 or op_xmin > true_xmax + 0.1) else 0.0
-                    oy = dy if (op_ymin < true_ymin - 0.1 or op_ymin > true_ymax + 0.1) else 0.0
-                    oz = dz if (op_zmax > true_zmax + 0.1 or op_zmax < true_zmin - 0.1) else 0.0
-                    op["pts"] = [[round(p[0] - ox, 4), round(p[1] - oy, 4), round(p[2] - oz, 4)] for p in op["pts"]]
+                    op["pts"] = [[round(p[0] - dx, 4), round(p[1] - dy, 4), round(p[2] - dz, 4)] for p in op["pts"]]
 
         # Falls das obere Dach (IfcSlab) in einem Alt-Job zu einem 3-Punkt-Dreieck verschnitten wurde,
         # stelle aus der horizontalen Bodenfläche der Zone das exakte 4-Punkt-Dachrechteck bei true_zmax her:
@@ -483,7 +477,7 @@ def generate_gbxml_from_job(project_dir: Path, output_gbxml_path: Path, ifc_path
         if wall_zmaxs and all(abs(wz - true_zmax) < 0.05 for wz in wall_zmaxs):
             floor_candidates = [s for s in z_surfs if s["ifc_class"] == "IfcSlab" and s["avg_z"] < 0.5 * (true_zmin + true_zmax)]
             for s in z_surfs:
-                if s["ifc_class"] == "IfcSlab" and s["avg_z"] > 0.5 * (true_zmin + true_zmax):
+                if s["ifc_class"] == "IfcSlab" and s["tilt"] < 5.0 and s["avg_z"] > 0.5 * (true_zmin + true_zmax):
                     if floor_candidates:
                         # Kopiere X/Y-Umriss vom Boden der Zone (umgekehrter Umlaufsinn -> Normale zeigt nach oben +Z)
                         fl_pts = floor_candidates[0]["pts"]
@@ -525,23 +519,13 @@ def generate_gbxml_from_job(project_dir: Path, output_gbxml_path: Path, ifc_path
             continue
         z_min_z, z_max_z, z_mid = zone_z_bounds[zk]
         for s in z_surfs:
-            if s["tilt"] < 65.0 or s["tilt"] > 115.0:
-                cx = sum(pt[0] for pt in s["pts"]) / len(s["pts"])
-                cy = sum(pt[1] for pt in s["pts"]) / len(s["pts"])
-                pts_ccw = sorted(s["pts"], key=lambda pt: math.atan2(pt[1] - cy, pt[0] - cx))
-                is_roof = (s["avg_z"] >= z_mid and abs(s["avg_z"] - bldg_max_z) < 0.35)
-                s["pts"] = pts_ccw if is_roof else list(reversed(pts_ccw))
-                s["norm"], s["area"] = _poly_normal_and_area(s["pts"])
-                s["width"], s["height"] = _poly_dimensions(s["pts"], s["area"])
-                s["azimuth"], s["tilt"] = _azimuth_and_tilt(s["norm"])
+            if s["tilt"] < 5.0 or s["tilt"] > 175.0:
                 if s["avg_z"] < z_mid:
                     s["idf_type"] = "FLOOR"
                     s["bc"] = "GROUND" if abs(s["avg_z"] - bldg_min_z) < 0.35 else "SURFACE"
-                    s["tilt"] = 180.0
                 else:
                     s["idf_type"] = "ROOF"
-                    s["bc"] = "OUTDOORS"
-                    s["tilt"] = 0.0 if s["tilt"] < 35.0 else s["tilt"]
+                    s["bc"] = "OUTDOORS" 
 
         floors = [s for s in z_surfs if s["idf_type"] == "FLOOR"]
         if floors:
@@ -591,7 +575,7 @@ def generate_gbxml_from_job(project_dir: Path, output_gbxml_path: Path, ifc_path
                     s["norm"], s["area"] = _poly_normal_and_area(s["pts"])
                 s["tilt"] = 180.0
     for s in surfaces:
-        if s["tilt"] < 65.0 or s["tilt"] > 115.0:
+        if s["tilt"] < 5.0 or s["tilt"] > 175.0:
             xs, ys, z0 = [pt[0] for pt in s["pts"]], [pt[1] for pt in s["pts"]], round(s["avg_z"], 4)
             x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
             ccw = [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0]]
@@ -696,7 +680,7 @@ def generate_gbxml_from_job(project_dir: Path, output_gbxml_path: Path, ifc_path
             cons_id = base_c["id"]
             s_display_name = s["name"]
 
-        if gb_type in ("SlabOnGrade", "InteriorFloor", "Roof", "Ceiling"):
+        if gb_type in ("SlabOnGrade", "InteriorFloor", "Ceiling") or (gb_type == "Roof" and s["tilt"] < 5.0):
             xs, ys, z0 = [pt[0] for pt in s["pts"]], [pt[1] for pt in s["pts"]], round(s["avg_z"], 4)
             x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
             pts_ccw = [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0]]
