@@ -106,6 +106,14 @@ def apply_catalog_to_gbxml_file(xml_path: Path, project_dir: Path):
             ET.SubElement(me, f"{ns}SpecificHeat", {"unit": "JPerKgK"}).text = f"{mc:.1f}"; m_l.append(me)
         l_l.append(le)
     wt_l = [wt for wt in wt_l if wt.findtext(f'{ns}Name','') in types]
+    for t_nm, info in types.items():
+        if info["ifc_class"] == "IfcDoor":
+            cid = _clean_id(t_nm)
+            wte = ET.Element(f"{ns}WindowType", {"id": f"WinType_{cid}"})
+            ET.SubElement(wte, f"{ns}Name").text = f"{t_nm} (Tür)"
+            ET.SubElement(wte, f"{ns}U-value", {"unit": "WPerSquareMeterK"}).text = f"{float(info['u_value']):.2f}"
+            ET.SubElement(wte, f"{ns}SolarHeatGainCoeff", {"unit": "Fraction"}).text = "0.00"
+            wt_l.append(wte)
     for wt in wt_l:
         wnm = wt.findtext(f"{ns}Name", "")
         if wnm in types:
@@ -121,6 +129,20 @@ def apply_catalog_to_gbxml_file(xml_path: Path, project_dir: Path):
         for t_nm in sorted(types, key=len, reverse=True):
             if nm.startswith(t_nm + "_") or nm == t_nm:
                 sf.set("constructionIdRef", f"Cons_{_clean_id(t_nm)}"); break
+        for op in sf.findall(f"{ns}Opening"):
+            onm = op.findtext(f"{ns}Name", "")
+            for t_nm in sorted(types, key=len, reverse=True):
+                if onm.startswith(t_nm + "_") or onm == t_nm:
+                    cid = _clean_id(t_nm)
+                    if types[t_nm]["ifc_class"] == "IfcDoor":
+                        if "evebi" in str(xml_path).lower():
+                            op.attrib.pop("constructionIdRef", None)
+                            op.set("windowTypeIdRef", f"WinType_{cid}")
+                        else:
+                            op.set("constructionIdRef", f"Cons_{cid}")
+                    else:
+                        op.set("windowTypeIdRef", f"WinType_{cid}")
+                    break
     ET.indent(tree, space="  "); tree.write(xml_path, encoding="utf-8", xml_declaration=True)
 
 def fix_geometry_report_html(job_dir: Path, ht: str) -> str:
@@ -159,8 +181,14 @@ def fix_geometry_report_html(job_dir: Path, ht: str) -> str:
         rows.append(f"<tr><td><span class='badge' style='background:{bg};color:{fg};'>{lb}</span></td><td style='font-family:monospace;font-size:11px;'>{sf.attrib['id'].replace('Surf_','')}</td><td><code>{t_nm}</code></td><td><b>{zn}</b></td><td>{ori}</td><td class='num'>{tilt:.1f}°</td><td class='num'>{w:.2f} &times; {h:.2f} m</td><td class='num'>{z0:.2f} &ndash; {z1:.2f} m</td><td class='num'>{gr:.2f} m²</td><td class='num'>{wa:.2f} m²</td><td class='num'><b>{net:.2f} m²</b></td><td class='num'>{uv:.2f}</td></tr>")
         for o in ops:
             ow, oh = float(o.find(f"{ns}RectangularGeometry/{ns}Width").text), float(o.find(f"{ns}RectangularGeometry/{ns}Height").text)
-            oa, ou = round(ow*oh,2), wu.get(o.attrib.get("windowTypeIdRef",""),1.3)
-            rows.append(f"<tr class='win-row'><td><span class='badge' style='background:#e0f2fe;color:#0369a1;'>↳ Fenster</span></td><td style='font-family:monospace;font-size:11px;'>{o.attrib['id']}</td><td><code>{re.sub(r'^(WinType_|Win_)', '', o.attrib.get('windowTypeIdRef',''))}</code></td><td>{zn}</td><td>{ori}</td><td class='num'>{tilt:.1f}°</td><td class='num'>{ow:.2f} &times; {oh:.2f} m</td><td class='num'>—</td><td class='num'>{oa:.2f} m²</td><td class='num'>—</td><td class='num'><b>{oa:.2f} m²</b></td><td class='num'>{ou:.2f}</td></tr>")
+            is_d = (o.attrib.get("openingType") == "NonSlidingDoor")
+            ref_id = o.attrib.get("constructionIdRef") if is_d else o.attrib.get("windowTypeIdRef", "")
+            oa = round(ow*oh, 2)
+            ou = cu.get(ref_id, 1.8) if is_d else wu.get(ref_id, 1.3)
+            olbl = "↳ Tür" if is_d else "↳ Fenster"
+            obg = "#fef3c7;color:#92400e" if is_d else "#e0f2fe;color:#0369a1"
+            otnm = re.sub(r"^(Cons_|WinType_|Win_)", "", ref_id or "")
+            rows.append(f"<tr class='win-row'><td><span class='badge' style='background:{obg};'>{olbl}</span></td><td style='font-family:monospace;font-size:11px;'>{o.attrib['id']}</td><td><code>{otnm}</code></td><td>{zn}</td><td>{ori}</td><td class='num'>{tilt:.1f}°</td><td class='num'>{ow:.2f} &times; {oh:.2f} m</td><td class='num'>—</td><td class='num'>{oa:.2f} m²</td><td class='num'>—</td><td class='num'><b>{oa:.2f} m²</b></td><td class='num'>{ou:.2f}</td></tr>")
     ht = re.sub(r"(<h2>2\. Alle Hüll- und Bauteilflächen.*?<tbody>).*?(</tbody>)", rf"\g<1>{''.join(rows)}\2", ht, flags=re.S)
     for zn, d in ze.items():
         es = d["w"]+d["r"]+d["f"]+d["win"]
@@ -172,5 +200,5 @@ def fix_geometry_report_html(job_dir: Path, ht: str) -> str:
         ht = re.sub(rf"<tr>\s*<td><b>{re.escape(zn)}</b>.*?</tr>", _upd, ht, flags=re.S)
     tot = sum(d["w"]+d["r"]+d["f"]+d["win"] for d in ze.values())
     ht = re.sub(r"(Thermische Hüllfläche \(A\)</div>\s*<div[^>]*>)[^<]+(</div>)", rf"\g<1>{tot:.2f} m²\2", ht)
-    ht = re.sub(r"A/V-Verhältnis:\s*[0-9.]+", f"A/V-Verhältnis: {tot/107.18:.2f}", ht)
+    ht = re.sub(r"A/V-Verhältnis:\s*[0-9.]+", f"A/V-Verhältnis: {tot/(sum(float(sp.findtext(f'{ns}Volume', '0')) for sp in root.findall(f'.//{ns}Space')) or 107.18):.2f}", ht)
     return ht

@@ -362,7 +362,7 @@ def generate_gbxml_from_job(project_dir: Path, output_gbxml_path: Path, ifc_path
         openings_by_base.setdefault(base_name, []).append({
             "id": _clean_id(f_name, "Open"),
             "name": f_name,
-            "is_door": ("DOOR" in f_type or "DOOR" in f_cons),
+            "is_door": ("DOOR" in f_type or "DOOR" in f_cons or ifc_elem_types.get(f_name.replace("Open_", "").upper(), {}).get("ifc_class") == "IfcDoor"),
             "cons_key": f_cons,
             "pts": pts,
             "norm": norm,
@@ -743,7 +743,7 @@ def generate_gbxml_from_job(project_dir: Path, output_gbxml_path: Path, ifc_path
                 "id": op["id"],
                 "openingType": op_type,
             }
-            op_ifc_info = ifc_elem_types.get(op["name"].upper())
+            op_ifc_info = ifc_elem_types.get(op["name"].upper()) or ifc_elem_types.get(op["name"].replace("Open_", "").upper())
             t_lbl = op_ifc_info.get("type_label") if op_ifc_info else None
 
             if not op["is_door"]:
