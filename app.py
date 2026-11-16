@@ -423,7 +423,8 @@ def index():
                     if (j.status === 'completed' || j.idf_file) {
                         if (j.idf_file) {
                             links += `<a href="/api/download/${id}/idf">⬇️ Nur .idf herunterladen</a>`;
-                            links += `<a href="/api/download/${id}/gbxml">🌐 Als gbXML (.xml) herunterladen (OpenStudio / EVEBI)</a>`;
+                            links += `<a href="/api/download/${id}/gbxml_openstudio">🌐 gbXML (OpenStudio)</a>`;
+                            links += `<a href="/api/download/${id}/gbxml_evebi" style="color:#0f766e;">🏠 gbXML (EVEBI 14.3.8)</a>`;
                         }
                         if (j.results && j.results.has_table_html) links += `<a href="/api/download/${id}/report" target="_blank">📊 Vollständiger EnergyPlus-Report (HTML)</a>`;
                         if (j.zip_file) links += `<a href="/api/download/${id}/zip">📦 Projekt (.zip)</a>`;
@@ -537,7 +538,7 @@ def list_jobs():
             pdir = jdir / "bim2sim_project"
             if pdir.exists():
                 JOBS[jdir.name]["results"] = _new_parse(pdir)
-    return JOBS
+    return dict(list(JOBS.items())[-5:])
 
 
 @app.get("/api/download/{job_id}/{file_type}")
@@ -554,13 +555,14 @@ def download_result(job_id: str, file_type: str):
         html_content = generate_geometry_html(job_id, job_dir, JOBS[job_id].get("filename", "Modell.ifc"))
         return HTMLResponse(content=html_content)
 
-    if file_type == "gbxml":
+    if file_type in ("gbxml", "gbxml_openstudio", "gbxml_evebi"):
         from gbxml_exporter import generate_gbxml_from_job
-        gbxml_path = job_dir / f"{Path(JOBS[job_id]['filename']).stem}_gbxml.xml"
+        target_mode = "evebi" if file_type == "gbxml_evebi" else "openstudio"
+        gbxml_path = job_dir / f"{Path(JOBS[job_id]['filename']).stem}_{target_mode}_gbxml.xml"
         in_ifcs = list((job_dir / "input").glob("*.ifc"))
         ifc_src = in_ifcs[0] if in_ifcs else None
         try:
-            generate_gbxml_from_job(project_dir, gbxml_path, ifc_path=ifc_src)
+            generate_gbxml_from_job(project_dir, gbxml_path, ifc_path=ifc_src, target=target_mode)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"gbXML-Generierung fehlgeschlagen: {e}")
         return FileResponse(gbxml_path, filename=gbxml_path.name, media_type="application/xml")

@@ -114,12 +114,8 @@ def apply_catalog_to_gbxml_file(xml_path: Path, project_dir: Path):
     for el in c_l + l_l + m_l + wt_l + ([dh] if dh is not None else []): root.append(el)
     sp_ids = [sp.attrib["id"] for sp in root.findall(f".//{ns}Space")]
     for sf in root.findall(f".//{ns}Surface"):
-        if sf.attrib.get("surfaceType") in ("InteriorFloor", "InteriorWall"):
+        if sf.attrib.get("surfaceType") in ("InteriorFloor", "InteriorWall", "Ceiling"):
             sf.set("exposedToSun", "false")
-            adj = sf.findall(f"{ns}AdjacentSpaceId")
-            if len(adj) == 1 and len(sp_ids) > 1:
-                other = next((s for s in sp_ids if s != adj[0].attrib.get("spaceIdRef")), sp_ids[0])
-                ET.SubElement(sf, f"{ns}AdjacentSpaceId", {"spaceIdRef": other})
 
         nm = sf.findtext(f"{ns}Name", "")
         for t_nm in sorted(types, key=len, reverse=True):
